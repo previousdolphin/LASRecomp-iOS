@@ -1,0 +1,17 @@
+# Builds the iOS memory-layout probe (tools/ios/vaprobe, docs/ios.md) as an unsigned IPA to sideload.
+name: iOS VA probe
+on:
+  push:
+    paths: ['tools/ios/vaprobe/**', '.github/workflows/ios-vaprobe.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: xcodebuild -version && xcrun -sdk iphoneos --show-sdk-version
+      - run: tools/ios/vaprobe/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VAProbe-ipa
+          path: build/ios/VAProbe.ipa

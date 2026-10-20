@@ -1,5 +1,12 @@
 # LAS Recomp
 
+> [!NOTE]
+> **This is the iOS fork.** It ports LAS Recomp to the iPhone (first target: iPhone 15 Pro), keeping it a static
+> recompilation: native arm64 code built ahead of time, no emulation, no JIT. It's early. The first step is a probe
+> that checks the runtime's memory layout on a real device. Plan, status and how to run the probe:
+> [docs/ios.md](docs/ios.md). Everything below is the upstream README for the desktop builds; upstream lives at
+> [peiikai/LASRecomp](https://github.com/peiikai/LASRecomp).
+
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
