@@ -6,12 +6,18 @@ on:
   workflow_dispatch:
 jobs:
   build:
-    runs-on: macos-15
+    # (both: macOS arm64 runners can sit in a capacity queue; Intel Xcode builds the same arm64 IPA)
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - run: xcodebuild -version && xcrun -sdk iphoneos --show-sdk-version
       - run: tools/ios/vaprobe/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: VAProbe-ipa
+          name: VAProbe-ipa-${{ matrix.runner }}
           path: build/ios/VAProbe.ipa

@@ -67,7 +67,7 @@ the probe partway, the next launch shows how far it got.
 ### Getting it on the phone
 
 1. Get the IPA: the **iOS VA probe** workflow builds it on every change to `tools/ios/vaprobe/` (Actions tab, latest
-   run, artifact `VAProbe-ipa`), or run `tools/ios/vaprobe/build.sh` on a Mac with Xcode.
+   run, artifact `VAProbe-ipa-<runner>`; either one is fine), or run `tools/ios/vaprobe/build.sh` on a Mac with Xcode.
 2. Sideload it with your Apple ID: AltStore / SideStore, Sideloadly, or Xcode. With a free account the entitlements
    are dropped, which is itself a useful run: it shows what iOS gives without them.
 3. For the full test, sign with a paid developer account that has Extended Virtual Addressing and Increased Memory
