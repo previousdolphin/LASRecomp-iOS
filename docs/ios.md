@@ -12,8 +12,8 @@ carries over. The work is in the host layer around it.
 
 | Step | State |
 | --- | --- |
-| 1. Memory layout probe on a real device (`tools/ios/vaprobe`) | free-account runs 1-2 done (below); v3 tests the compact layout |
-| 1b. Compact iOS layout in the runtime (`rt.h`, `kernel.h`, host stack size) | designed (below), not written |
+| 1. Memory layout probe on a real device (`tools/ios/vaprobe`) | done: the compact layout passes on a free account (run 3) |
+| 1b. Compact iOS layout in the runtime (`rt.h`, `kernel.h`, host stack size) | in: default on iOS, `-DLARECOMP_COMPACT_LAYOUT=1` on desktop; untested with the game |
 | 2. Game code built on a Mac and linked into the app | not started |
 | 3. `runtime/platform/ios.c`, no child processes | not started |
 | 4. Metal: CPU fallback for BC textures | not needed: the A17 Pro supports BC1-7 |
@@ -86,9 +86,13 @@ Things to watch:
   Increased Memory Limit entitlement (free accounts may be able to get it through SideStore-style tools; not
   verified), a lower internal resolution, and freeing the guest copy of a texture once Metal has it (needs the write
   tracking that macOS doesn't have yet, `plat_written_pages`).
-- **Gating.** On iOS the layout is picked at startup: the desktop window when Extended Virtual Addressing gave enough
-  room, the compact one otherwise, so a paid-account build keeps the desktop layout. That means the region constants
-  become variables, reported to the game the same way.
+- **One layout for every iOS build.** Run 3 showed the compact layout works without Extended Virtual Addressing, so
+  iOS always uses it (a compile-time switch in `runtime/rt.h`, with a `_Static_assert` that the regions don't overlap).
+  That entitlement isn't needed at all. A paid account still matters for Increased Memory Limit, which is about RAM,
+  not addresses.
+- **Test it on desktop first.** Building with `-DLARECOMP_COMPACT_LAYOUT=1` on any desktop platform runs the real
+  game in the iOS layout, which catches the alias-region, guest-stack and host-stack guesses with a debugger and logs,
+  before anything iOS-specific exists.
 
 ## Probe results
 
@@ -115,6 +119,21 @@ in a Metal buffer (and finds the largest one that works if 3.25 GB doesn't), cre
 starts 48 threads with 32 MB stacks, then fills the heap to the memory limit. It also lists every large mapping and
 hole. Last, it tries an experiment: releasing 1 GB of the reserved range below `0x70_0000_0000`. If that works, a
 lower `MAIN_BASE` would fit the whole desktop layout without the entitlement.
+
+**Run 3:** same phone and account, probe v3. **The compact layout passes every check.**
+
+- Address map: the dyld shared cache (tag 32) at `0x1_8000_0000`-`0xf_c000_0000`, then kernel guard regions
+  (tag 31, `VM_MEMORY_GUARD`, no access) from `0xf_c000_0000` to `0x70_0000_0000`, then the 6 GB hole to the top. Below
+  the shared cache, 1.78 GB more is free in holes (where the host's own allocations can go).
+- The 4.5 GB window reserves, every region takes writes, the reboot reset works.
+- Metal `maxBufferLength` is 4 GB, so the no-copy wrapper over the whole 3.25 GB heap works.
+- 512 MB of private textures, then 48 threads with 32 MB stacks, all at once: no errors.
+- With all of that held, 2.38 GB of guest heap resident before 400 MB were left. The peak footprint was 2.93 GB, so
+  the limit is about 3.3 GB.
+- Write fault caught and resumed. BC, ASTC, MetalFX and runtime shader compiles all work.
+- The experiment: `vm_deallocate` on 1 GB of the guard region returns success, but the range is still in use
+  afterwards. The guard can't be reclaimed, so the full desktop layout is out without the entitlement (and not
+  needed).
 
 ## The probe
 

@@ -13,20 +13,48 @@
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
 // guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
+// iOS guards 0x10_0000_0000-0x70_0000_0000 too, and without the Extended Virtual Addressing entitlement its address
+// space ends at 0x71_8000_0000, so iOS builds use the compact layout: a 4.5 GB window, with everything the runtime
+// places itself moved down next to main and sdk (whose addresses are in the generated code) and the alias region and
+// guest stacks shrunk (docs/ios.md). -DLARECOMP_COMPACT_LAYOUT=1 tries it on desktop.
+#if !defined(LARECOMP_COMPACT_LAYOUT) && defined(__APPLE__)
+#include <TargetConditionals.h>
+#define LARECOMP_COMPACT_LAYOUT TARGET_OS_IOS
+#endif
 #define GUEST_LO     0x7000000000ull
-#define GUEST_HI     0x7320000000ull
 #define MAIN_BASE    0x7000000000ull
 #define SDK_BASE     0x7004000000ull
-#define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
 #define HLE_SIZE     0x0000100000ull
-#define TLS_BASE     0x7090000000ull
 #define TLS_SIZE     0x0000100000ull
-#define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
+#define HEAP_MAX     0x00D0000000ull   // 3.25 GB
+#if LARECOMP_COMPACT_LAYOUT
+#define HLE_BASE     0x7010000000ull   // fake addresses for host-implemented functions
+#define TLS_BASE     0x7010100000ull
+#define HLE_HEAP     0x7011000000ull   // guest-visible memory owned by host code
+#define ALIAS_BASE   0x7020000000ull   // alias region (svcMapMemory targets)
+#define ALIAS_SIZE   0x0020000000ull
+#define GSTACK_BASE  0x7040000000ull   // guest stacks (kernel.h STACK_BASE)
+#define GSTACK_SIZE  0x0010000000ull
+#define HEAP_BASE    0x7050000000ull
+#define GUEST_HI     0x7120000000ull
+#define HOST_STACK_SIZE (32ull << 20)  // per guest thread: guest recursion runs on the host stack
+#else
+#define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
+#define TLS_BASE     0x7090000000ull
+#define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
 #define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)
 #define ALIAS_SIZE   0x0100000000ull
+#define GSTACK_BASE  0x7200000000ull   // guest stacks (kernel.h STACK_BASE)
+#define GSTACK_SIZE  0x0040000000ull
 #define HEAP_BASE    0x7240000000ull
-#define HEAP_MAX     0x00D0000000ull   // 3.25 GB
+#define GUEST_HI     0x7320000000ull
+#define HOST_STACK_SIZE (256ull << 20)  // per guest thread: guest recursion runs on the host stack
+#endif
+_Static_assert(SDK_BASE < HLE_BASE && HLE_BASE + HLE_SIZE <= TLS_BASE && TLS_BASE + TLS_SIZE <= HLE_HEAP &&
+                   HLE_HEAP + HLE_HEAP_SIZE <= ALIAS_BASE && ALIAS_BASE + ALIAS_SIZE <= GSTACK_BASE &&
+                   GSTACK_BASE + GSTACK_SIZE <= HEAP_BASE && HEAP_BASE + HEAP_MAX <= GUEST_HI,
+               "guest regions overlap or leave the window");
 
 // ---- loader.c
 typedef struct Module {

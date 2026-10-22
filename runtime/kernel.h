@@ -4,8 +4,8 @@
 
 #include "rt.h"
 
-#define STACK_BASE 0x7200000000ull
-#define STACK_SIZE 0x0040000000ull
+#define STACK_BASE GSTACK_BASE  // (rt.h: the layout)
+#define STACK_SIZE GSTACK_SIZE
 
 typedef enum { KOBJ_THREAD = 1, KOBJ_EVENT, KOBJ_SESSION, KOBJ_SHMEM, KOBJ_TMEM } KType;
 typedef enum { WAIT_NONE = 0, WAIT_MUTEX, WAIT_CONDVAR, WAIT_ARBITER } WaitKind;

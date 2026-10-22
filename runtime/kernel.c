@@ -223,7 +223,7 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
 static void thread_start(KThread *t) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 256ull << 20);  // guest recursion runs on the host stack
+    pthread_attr_setstacksize(&attr, HOST_STACK_SIZE);  // guest recursion runs on the host stack
     t->started = true;
     pthread_create(&t->host, &attr, thread_main, t);
     pthread_attr_destroy(&attr);
