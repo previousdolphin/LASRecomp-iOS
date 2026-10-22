@@ -12,21 +12,21 @@ carries over. The work is in the host layer around it.
 
 | Step | State |
 | --- | --- |
-| 1. Memory layout probe on a real device (`tools/ios/vaprobe`) | written, waiting on device results |
+| 1. Memory layout probe on a real device (`tools/ios/vaprobe`) | free-account run done (below); paid-account run next |
 | 2. Game code built on a Mac and linked into the app | not started |
 | 3. `runtime/platform/ios.c`, no child processes | not started |
-| 4. Metal: CPU fallback for BC textures if the device lacks them | not started |
+| 4. Metal: CPU fallback for BC textures | not needed: the A17 Pro supports BC1-7 |
 | 5. Touch controls, file picking, Files-app data folder | not started |
 
 ## What has to change
 
 **1. The guest window.** Guest addresses are host addresses (`runtime/rt.h`): the runtime claims a fixed 12.5 GB
 block at `0x70_0000_0000` at startup, and every guest thread gets a 256 MB host stack (`runtime/kernel.c`). By
-default iOS caps an app's address space near 63 GB, well below that block. XNU raises the cap for apps with the
-Extended Virtual Addressing entitlement, which needs a paid developer account (or TrollStore). If that isn't enough,
-plan B is to move the guest lower: regenerate the game code with new base addresses (`runtime/gamebuild.c` passes
-them to the generator) and make the handful of absolute addresses in `runtime/ui/` relative to `MAIN_BASE`. The probe
-decides which.
+default the top of an iOS app's address space is just past `0x70_0000_0000`, short of the block's end at
+`0x73_2000_0000`. XNU raises the cap for apps with the Extended Virtual Addressing entitlement, which needs a paid
+developer account (or TrollStore). Moving the guest lower is not an option: iOS reserves `0x2_0000_0000` to
+`0x70_0000_0000`, the same range macOS does (see the comment in `runtime/rt.h`). Without the entitlement the only way
+is a smaller window (less alias region, a smaller heap cap), if what's left above `0x70_0000_0000` is enough.
 
 **2. No building on the phone.** On desktop the start screen runs the generator (Python) and a bundled compiler on
 the player's game files, then `dlopen`s the result. iOS allows none of that. On iOS the game code is generated on a
@@ -47,6 +47,21 @@ directly. If the device reports no BC support, those textures get decoded on the
 entitlement (iOS gives an 8 GB iPhone roughly 6 GB with it; the guest heap is capped at 3.25 GB), an on-screen
 controller drawn with the existing ImGui UI (Bluetooth controllers work through SDL as they are), and saves and
 settings in the app's Documents folder.
+
+## Probe results
+
+**Run 1:** iPhone 15 Pro Max (iPhone16,2), iOS 27.2, free Apple ID (no entitlements granted), probe v1.
+
+- Fixed allocations from `0x2_0000_0000` to `0x40_0000_0000` all report in use; the highest mapped region ends at
+  exactly `0x70_0000_0000`. A 16K block at `0x70_0000_0000` works; at `0x7f_0000_0000` it's past the top.
+- The runtime's 12.5 GB window: past the top (`vm_allocate` and `mmap` both fail). No 12.5 GB block fits anywhere.
+- 30 of 32 threads with 256 MB stacks, then `EAGAIN`: the same address-space ceiling (7.5 GB of stacks).
+- 3.29 GB available to the app.
+- Metal: A17 Pro, Apple9 family, 5.33 GB working set, BC1-7 and ASTC supported, MetalFX supported, runtime MSL
+  compile works (119 ms for a trivial kernel).
+
+Probe v2 measures the exact top of the address space, the largest free block and the memory ceiling even when the
+window doesn't fit, and counts threads until the address space runs out.
 
 ## The probe
 

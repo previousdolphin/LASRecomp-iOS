@@ -121,11 +121,39 @@ static void address_space(void) {
         addr += size;
     }
     say("  highest mapped address now: 0x%llx", (uint64_t)top);
-    // plan B (rebasing the guest): where the kernel would put a 12.5 GB block on its own
+    // the top of the map: past it a fixed allocation is an invalid address, below it it's free or in use
+    uint64_t lo = 0, hi = 0x800000000000ull;
+    for (size_t i = 0; i < sizeof at / sizeof *at; i++) {
+        vm_address_t a = at[i];
+        kern_return_t kr = vm_allocate(mach_task_self(), &a, vm_page_size, VM_FLAGS_FIXED);
+        if (kr == KERN_SUCCESS) vm_deallocate(mach_task_self(), a, vm_page_size);
+        if (kr == KERN_INVALID_ADDRESS) { hi = at[i]; break; }
+        lo = at[i];
+    }
+    while (hi - lo > vm_page_size) {
+        uint64_t mid = (lo + (hi - lo) / 2) & ~(uint64_t)(vm_page_size - 1);
+        vm_address_t a = mid;
+        kern_return_t kr = vm_allocate(mach_task_self(), &a, vm_page_size, VM_FLAGS_FIXED);
+        if (kr == KERN_SUCCESS) vm_deallocate(mach_task_self(), a, vm_page_size);
+        if (kr == KERN_INVALID_ADDRESS) hi = mid; else lo = mid;
+    }
+    say("  top of the address space: 0x%llx (guest window needs 0x%llx)", hi, GUEST_HI);
+    if (hi > GUEST_LO) say("  room above 0x%llx: %.2f GB (window: %.1f GB)", GUEST_LO, gb(hi - GUEST_LO), gb(GUEST_HI - GUEST_LO));
+    // the largest block the kernel will place on its own (what a smaller window would have to fit in)
+    uint64_t small = 0, big = 1ull << 40;
+    while (big - small > (64ull << 20)) {
+        uint64_t sz = (small + (big - small) / 2) & ~((64ull << 20) - 1);
+        vm_address_t any = 0;
+        if (vm_allocate(mach_task_self(), &any, sz, VM_FLAGS_ANYWHERE) == KERN_SUCCESS) {
+            vm_deallocate(mach_task_self(), any, sz);
+            small = sz;
+        } else big = sz;
+    }
     vm_address_t any = 0;
-    kern_return_t kr = vm_allocate(mach_task_self(), &any, GUEST_HI - GUEST_LO, VM_FLAGS_ANYWHERE);
-    say("  12.5 GB anywhere: %s%s", kr_name(kr), kr ? "" : [NSString stringWithFormat:@" at 0x%llx", (uint64_t)any].UTF8String);
-    if (!kr) vm_deallocate(mach_task_self(), any, GUEST_HI - GUEST_LO);
+    if (small && !vm_allocate(mach_task_self(), &any, small, VM_FLAGS_ANYWHERE)) {
+        say("  largest free block: %.2f GB at 0x%llx", gb(small), (uint64_t)any);
+        vm_deallocate(mach_task_self(), any, small);
+    }
 }
 
 // ---- the runtime's reservation (main.c -> plat_reserve_guest, plat_reset_guest)
@@ -151,18 +179,18 @@ static bool guest_window(void) {
 }
 
 // How much of the guest heap can be made resident before iOS's limit (the game itself uses less than all of it).
-static void heap_commit(void) {
-    say("== heap commit (stops while 400 MB are still free, so iOS doesn't kill the probe)");
+static void heap_commit(uint64_t heap) {
+    say("== heap commit at 0x%llx (stops while 400 MB are still free, so iOS doesn't kill the probe)", heap);
     uint64_t done = 0, step = 64ull << 20;
     while (done + step <= HEAP_MAX && os_proc_available_memory() > (400ull << 20)) {
-        for (uint64_t p = 0; p < step; p += vm_page_size) *(volatile uint8_t *)(HEAP_BASE + done + p) = 1;
+        for (uint64_t p = 0; p < step; p += vm_page_size) *(volatile uint8_t *)(heap + done + p) = 1;
         done += step;
         if (done % (512ull << 20) == 0) say("  %.1f GB resident, %.2f GB left", gb(done), gb(os_proc_available_memory()));
     }
     say("  resident in the guest heap: %.2f GB of %.2f GB, %.2f GB left", gb(done), gb(HEAP_MAX), gb(os_proc_available_memory()));
     verdict(done >= (2ull << 30), "at least 2 GB of guest heap resident");
-    vm_address_t a = GUEST_LO;  // (give it back)
-    vm_allocate(mach_task_self(), &a, GUEST_HI - GUEST_LO, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
+    vm_address_t a = heap;  // (give it back: fresh zero pages)
+    vm_allocate(mach_task_self(), &a, HEAP_MAX, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
 }
 
 // ---- guest threads: each gets a 256 MB host stack (guest recursion runs on it)
@@ -179,8 +207,8 @@ static void *thread_body(void *arg) {
 }
 
 static void threads(void) {
-    enum { N = 32 };
-    say("== %d threads with %llu MB stacks, all alive at once", N, HOST_STACK >> 20);
+    enum { N = 64 };
+    say("== up to %d threads with %llu MB stacks, all alive at once", N, HOST_STACK >> 20);
     g_hold = dispatch_semaphore_create(0);
     pthread_t t[N];
     int made = 0, err = 0;
@@ -197,7 +225,8 @@ static void threads(void) {
     say("  created %d (%s), %d touched their stacks", made, err ? strerror(err) : "no errors", g_touched);
     for (int i = 0; i < made; i++) dispatch_semaphore_signal(g_hold);
     for (int i = 0; i < made; i++) pthread_join(t[i], NULL);
-    verdict(made == N && g_touched == N, "every thread created and running");
+    say("  that's %.1f GB of stacks", gb(made * HOST_STACK));
+    verdict(made >= 32 && g_touched == made, "at least 32 threads created and running");
 }
 
 // ---- write faults on protected guest pages, handled and resumed (the runtime's rt_fault_watch)
@@ -215,7 +244,7 @@ static void on_fault(int sig, siginfo_t *si, void *ctx) {
     signal(sig, SIG_DFL);
 }
 
-static void faults(void) {
+static void faults(uint64_t page) {
     say("== write fault on a read-only guest page, handled");
     stack_t ss = {.ss_sp = malloc(1 << 20), .ss_size = 1 << 20};
     sigaltstack(&ss, NULL);
@@ -224,12 +253,12 @@ static void faults(void) {
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGBUS, &sa, NULL);
-    g_fault_page = HEAP_BASE;
-    int rc = mprotect((void *)HEAP_BASE, vm_page_size, PROT_READ);
+    g_fault_page = page;
+    int rc = mprotect((void *)page, vm_page_size, PROT_READ);
     say("  mprotect read-only: %s", rc ? strerror(errno) : "ok");
-    *(volatile uint32_t *)HEAP_BASE = 7;
+    *(volatile uint32_t *)page = 7;
     g_fault_page = 0;
-    verdict(rc == 0 && g_faults == 1 && *(volatile uint32_t *)HEAP_BASE == 7, "fault caught, page unprotected, write landed");
+    verdict(rc == 0 && g_faults == 1 && *(volatile uint32_t *)page == 7, "fault caught, page unprotected, write landed");
 }
 
 // ---- Metal: what the renderer (runtime/nvn/metal.m, renderer.m) relies on
@@ -259,10 +288,15 @@ static void *run(void *arg) {
     device_info();
     entitlements();
     address_space();
-    bool window = guest_window();
-    if (window) heap_commit();
+    vm_address_t heap = HEAP_BASE;
+    if (!guest_window()) {  // (still measure the memory limit: a block the guest heap's size, wherever it fits)
+        heap = 0;
+        if (vm_allocate(mach_task_self(), &heap, HEAP_MAX, VM_FLAGS_ANYWHERE)) heap = 0;
+        say("  (heap test on a %.2f GB block %s instead)", gb(HEAP_MAX), heap ? "placed anywhere" : "- none free");
+    }
+    if (heap) heap_commit(heap);
     threads();
-    if (window) faults();  // (on a page of the window)
+    if (heap) faults(heap);
     metal();
     say("== done: %s", g_fails ? "some checks failed (above)" : "everything the runtime assumes holds");
     return NULL;
